@@ -72,7 +72,9 @@ espota.py -i <esp32-ip> -p 3232 --auth=<ota-password> -f <path-to>/diseqc_rotato
 
 ## Using it
 
-Web UI: open `http://<esp32-ip>/`. Slider for goto, jog buttons, halt, live status.
+Web UI: open `http://<esp32-ip>/`. The dish drawing turns to the current pointing and
+shows the angle under it, with true azimuth once calibrated. A dashed outline marks the
+target. Slider for goto, jog buttons, halt, live status, calibration.
 
 HTTP API:
 
@@ -81,22 +83,46 @@ HTTP API:
 /east?steps=5     jog east 5 steps (1 to 128), steps=0 runs until /halt
 /west?steps=5
 /halt
+/gotoaz?az=318    go to a true azimuth (after calibration, must be inside the motor's range)
 /raw?cmd=E0316A00 send any DiSEqC frame as hex
-/status           JSON: target, last command, uptime, ip, rssi
+/status           JSON: pos, moving, az, target, last command, calibration, uptime, ip, rssi
+/setpos?deg=-12.5 tell the firmware where the motor really is, sends nothing to the motor
+/cal?aznow=318    calibration, sends nothing to the motor, see below
 ```
 
 A request with a missing or malformed argument gets a 400 and the motor is not
 touched. There is no login on the web UI or the API, so keep the board on a
 network you trust.
 
-`target` is the last angle that was commanded. The motor gives no position
-feedback, so jog moves do not change it.
+## Current pointing
+
+A DiSEqC motor sends nothing back, so the current angle is dead reckoning. The
+firmware replays every frame it sends (goto, jog, run, halt, goto stored, raw
+frames too) against the motor's speed and step size, and `pos` in `/status` moves
+toward the target at that speed. The estimate is kept in flash, so it survives a
+reboot of the ESP32. `target` is the last angle commanded with goto.
+
+Calibrate once:
+
+```
+/cal?speed=1.9     motor speed in deg/s. Time a goto from 0 to 60 and divide. Depends on supply voltage
+/cal?step=0.1      size of one jog step in degrees
+/cal?dir=-1        use -1 if true azimuth shrinks when the motor angle grows
+/cal?aznow=318     the dish points at true azimuth 318 right now (compass, corrected for declination)
+/cal?az0=300       or give the true azimuth of motor angle 0 directly
+```
+
+If the estimate drifts (power cut in the middle of a move, motor stalled against
+its limit), read the scale on the motor and send `/setpos?deg=<reading>`, or use
+the two fields at the bottom of the web page.
 
 Serial (115200): `e 5`, `w 5`, `h`, `g 30`, `s` (store reference 0),
-`z` (go to reference), `r E0 31 60` (raw), `t` (5 s test tone), `i` (print IP).
+`z` (go to reference), `r E0 31 60` (raw), `p -12.5` (set the position estimate),
+`t` (5 s test tone), `i` (print IP).
 
 The angle is relative to the motor's own centre mark. Calibrate the offset to
-true azimuth once with a compass and add it in your tracking software.
+true azimuth once with a compass (`/cal?aznow=`), after that `/gotoaz` and the web
+page work in true azimuth.
 
 ## DiSEqC 1.2 reference
 
@@ -125,4 +151,4 @@ Bit timing: 22 kHz tone, 0 = 1.0 ms tone + 0.5 ms silence, 1 = 0.5 ms tone +
 
 The 22 kHz tone must reach the motor at 0.4 to 0.9 V peak to peak. With the
 values above it lands around 1 V. If your motor ignores commands, check the
-resistor value first (220 k instead of 220 ohm cost me an evening).
+resistor value first (a kilohm part where the 100 ohm belonged cost me an evening).

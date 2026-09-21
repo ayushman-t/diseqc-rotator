@@ -9,7 +9,7 @@ your local supplier.
 | 2 | MCU board | ESP32 dev board, WROOM-32 | 1 | 5 | Powered from its own USB port |
 | 3 | L1, L2 | 330 uH toroidal inductor, 5 A | 2 | 2 | In series, supply + to coax centre. Must carry the motor current without saturating |
 | 4 | C | 1 uF 250 V film capacitor | 1 | 1 | Blocks the motor DC from the GPIO pin. Film, not electrolytic |
-| 5 | R | see README, 1/4 W | 1 | 0.1 | Between GPIO 25 and C |
+| 5 | R | 100 ohm, 1/4 W | 1 | 0.1 | Between GPIO 25 and C |
 | 6 | Supply | 12 to 18 V DC, 1 A or more | 1 | 8 | 15 to 18 V moves the dish better under load |
 | 7 | Coax | RG6 with F connectors | as needed | 5 | Board to the motor's REC port |
 | 8 | F connector | chassis or inline F female | 1 | 1 | Coax entry on the board |
