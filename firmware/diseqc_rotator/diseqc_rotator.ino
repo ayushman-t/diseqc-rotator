@@ -1,19 +1,12 @@
-// ESP32 DiSEqC 1.2 rotator driver
-// Copyright (c) 2026 Ayushman Tripathi, https://radioastronomy.in
-// MIT License: anyone may use, copy, modify and redistribute this file,
-// with or without changes, provided this notice is kept. No warranty.
-//
-// GPIO -> 100R -> 1uF -> coax centre. DC in through 2x 330uH.
-// Serial (115200): e N, w N, h, g DEG, s, z, r HEX, p DEG, t, i
-// HTTP: /  (web UI)  /east?steps=N  /west?steps=N  /halt  /goto?deg=X  /gotoaz?az=X
-//       /raw?cmd=HEX  /status  /setpos?deg=X  /cal?aznow=X&az0=X&dir=1&speed=X&step=X
+// DiSEqC 1.2 dish rotator for ESP32
+// Ayushman Tripathi, www.radioastronomy.in
+// Free for anyone to use, for anything. No warranty.
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 
-// Copy secrets.example.h to secrets.h and fill it in. secrets.h is git-ignored.
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
@@ -28,32 +21,24 @@
 #define TONE_RES   8
 #define TONE_DUTY  128
 
-// The motor's mechanical range. Angles outside it are clamped, not sent.
 #define MAX_DEG    75.0f
-// 0x80..0xFF in a drive command means 128..1 steps. Anything below 0x80 is a
-// run time in seconds, so a step count above 128 must never reach the wire.
 #define MAX_STEPS  128
 
 WebServer server(80);
 
-// ---- state for /status ----
 String lastCmd = "none";
 float  targetDeg = 0;
 unsigned long bootMs = 0;
 
-// ---- position estimate ----
-// A DiSEqC motor reports nothing back, so the current angle is dead reckoning:
-// every frame that goes out is replayed against the motor's speed and step size.
-// Survives a reboot through NVS. Resync with /setpos if it ever drifts.
 Preferences prefs;
-float posDeg = 0;            // where the motor should be right now
-float moveTo = 0;            // where the move in progress ends
+float posDeg = 0;
+float moveTo = 0;
 bool  moving = false;
-float refDeg = 0;            // the motor's stored position 0
-float degPerSec  = 1.9f;     // motor speed, set with /cal?speed=
-float degPerStep = 0.1f;     // size of one jog step, set with /cal?step=
-float azZero = NAN;          // true azimuth at motor angle 0, NAN until calibrated
-int   azDir  = 1;            // +1 if azimuth grows with motor angle, -1 if it shrinks
+float refDeg = 0;
+float degPerSec  = 1.9f;
+float degPerStep = 0.1f;
+float azZero = NAN;
+int   azDir  = 1;
 unsigned long lastTick = 0, lastSave = 0;
 
 static void savePos() { prefs.putFloat("pos", posDeg); lastSave = millis(); }
@@ -74,7 +59,6 @@ static float azOf(float deg) {
   return a < 0 ? a + 360.0f : a;
 }
 
-// ---- tone ----
 static inline void toneOn()  { ledcWrite(DISEQC_PIN, TONE_DUTY); }
 static inline void toneOff() { ledcWrite(DISEQC_PIN, 0); }
 
@@ -95,7 +79,6 @@ static void sendFrame(const uint8_t* d, size_t n) {
   toneOff(); delay(100);
 }
 
-// Replays a frame that was just sent against the position estimate.
 static void trackFrame(const uint8_t* d, size_t n) {
   if (n < 3 || (d[1] != 0x31 && d[1] != 0x30 && d[1] != 0x00)) return;
   tick();
@@ -104,7 +87,6 @@ static void trackFrame(const uint8_t* d, size_t n) {
   switch (d[2]) {
     case 0x60: moving = false; savePos(); break;
     case 0x68: case 0x69: {
-      // nn: 0 = run to the limit, 0x80..0xFF = 256-nn steps, 0x01..0x7F = run for nn seconds
       float span = nn == 0 ? 2 * MAX_DEG : nn >= 0x80 ? (256 - nn) * degPerStep : nn * degPerSec;
       to = posDeg + (d[2] == 0x68 ? span : -span); go = true; break; }
     case 0x6A: if (nn == 0) { refDeg = posDeg; prefs.putFloat("ref", refDeg); } break;
@@ -118,9 +100,8 @@ static void trackFrame(const uint8_t* d, size_t n) {
 }
 static void send(const uint8_t* d, size_t n) { sendFrame(d, n); trackFrame(d, n); }
 
-// ---- DiSEqC 1.2 ----
 static uint8_t stepByte(long s) {
-  if (s <= 0) return 0x00;                 // run until halt
+  if (s <= 0) return 0x00;
   if (s > MAX_STEPS) s = MAX_STEPS;
   return (uint8_t)(256 - s);
 }
@@ -138,7 +119,6 @@ void cmdGotoAngle(float deg) {
 void cmdStoreRef() { uint8_t f[] = {0xE0,0x31,0x6A,0x00}; send(f,4); lastCmd = "store ref"; }
 void cmdGotoRef()  { uint8_t f[] = {0xE0,0x31,0x6B,0x00}; send(f,4); lastCmd = "goto ref"; }
 
-// Accepts hex digits and spaces only, 1 to 8 whole bytes. Returns false otherwise.
 static bool sendRawHex(String hex) {
   hex.replace(" ", "");
   if (hex.length() == 0 || hex.length() % 2 || hex.length() > 16) return false;
@@ -150,7 +130,6 @@ static bool sendRawHex(String hex) {
   return true;
 }
 
-// A number, optionally signed, with an optional fraction. Empty is not a number.
 static bool isNumber(const String& s) {
   if (!s.length()) return false;
   bool digit = false;
@@ -162,7 +141,6 @@ static bool isNumber(const String& s) {
   return digit;
 }
 
-// ---- web UI (self contained) ----
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Dish rotator</title>
@@ -218,7 +196,7 @@ input[type=range]{width:100%}
 
 <div class=card>
 <div class=kv><span>Go to</span><span id=azval>0.0&deg;</span></div>
-<input type=range id=az min=-75 max=75 step=0.5 value=0 oninput="drag=true;azval.innerHTML=(+this.value).toFixed(1)+'&deg;';rot('ghost',this.value)">
+<input type=range id=az min=-75 max=75 step=0.5 value=0 oninput="drag=true;clearTimeout(dragT);dragT=setTimeout(function(){drag=false},8000);azval.innerHTML=(+this.value).toFixed(1)+'&deg;';rot('ghost',this.value)">
 <div class=row><button onclick="go(az.value)">Go to angle</button></div>
 <div class=row><button onclick="az.value=0;azval.innerHTML='0.0&deg;';go(0)">Centre (0&deg;)</button></div>
 </div>
@@ -252,7 +230,7 @@ input[type=range]{width:100%}
 </div>
 
 <script>
-var drag=false,mv=false;
+var drag=false,mv=false,dragT=0;
 function rot(id,d){document.getElementById(id).setAttribute('transform','rotate('+d+' 120 118)')}
 (function(){var h='';for(var a=-75;a<=75;a+=15){var r=a*Math.PI/180,s=Math.sin(r),c=Math.cos(r),big=(a%45==0||Math.abs(a)==75);
  h+='<line x1="'+(120+108*s)+'" y1="'+(118-108*c)+'" x2="'+(120+(big?116:113)*s)+'" y2="'+(118-(big?116:113)*c)+'" stroke="#666" stroke-width="'+(big?2:1)+'"/>';
@@ -274,8 +252,8 @@ function loop(){fetch('/status').then(function(r){return r.json()}).then(show).c
 loop();
 </script>
 <div style="text-align:center;color:#777;font-size:13px;margin:18px 0 6px">
-DiSEqC dish rotator &middot; Ayushman Tripathi &middot; <a href="https://radioastronomy.in" style="color:#7aa7ff;text-decoration:none">radioastronomy.in</a><br>
-MIT licensed. Use it, change it, share it.
+DiSEqC dish rotator &middot; Ayushman Tripathi &middot; <a href="https://www.radioastronomy.in" style="color:#7aa7ff;text-decoration:none">www.radioastronomy.in</a><br>
+Free for anyone to use, for anything.
 </div>
 </body></html>)HTML";
 
@@ -298,7 +276,6 @@ void setupHttp() {
                ",\"rssi\":" + String(WiFi.RSSI()) + "}";
     server.send(200, "application/json", j);
   });
-  // A missing or malformed argument is an error, never a move.
   server.on("/east", []() {
     if (!isNumber(server.arg("steps"))) { server.send(400, "text/plain", "steps=N required"); return; }
     cmdDriveEast(server.arg("steps").toInt()); server.send(200, "text/plain", "east");
@@ -312,7 +289,6 @@ void setupHttp() {
     if (!isNumber(server.arg("deg"))) { server.send(400, "text/plain", "deg=X required"); return; }
     cmdGotoAngle(server.arg("deg").toFloat()); server.send(200, "text/plain", "goto");
   });
-  // Go to a true azimuth. Needs /cal first, and the azimuth must be inside the motor's range.
   server.on("/gotoaz", []() {
     if (!isNumber(server.arg("az"))) { server.send(400, "text/plain", "az=X required"); return; }
     if (isnan(azZero)) { server.send(409, "text/plain", "azimuth not calibrated, use /cal?aznow=X"); return; }
@@ -321,15 +297,11 @@ void setupHttp() {
     if (fabsf(d) > MAX_DEG) { server.send(400, "text/plain", "azimuth outside the motor's range"); return; }
     cmdGotoAngle(d); server.send(200, "text/plain", "goto " + String(d, 1));
   });
-  // Tell the firmware where the motor really is. Sends nothing to the motor.
   server.on("/setpos", []() {
     if (!isNumber(server.arg("deg"))) { server.send(400, "text/plain", "deg=X required"); return; }
     posDeg = constrain(server.arg("deg").toFloat(), -MAX_DEG, MAX_DEG); moving = false; savePos();
     server.send(200, "text/plain", "pos " + String(posDeg, 1));
   });
-  // Calibration, any subset: aznow (dish points at this true azimuth right now),
-  // az0 (true azimuth at motor angle 0), dir (1 or -1), speed (deg/s), step (deg per jog step).
-  // Sends nothing to the motor.
   server.on("/cal", []() {
     bool any = false;
     if (isNumber(server.arg("dir")))   { azDir = server.arg("dir").toInt() < 0 ? -1 : 1; prefs.putInt("dir", azDir); any = true; }
@@ -346,7 +318,6 @@ void setupHttp() {
   });
 }
 
-// ---- serial ----
 void handleSerial() {
   if (!Serial.available()) return;
   String line = Serial.readStringUntil('\n'); line.trim();
@@ -368,7 +339,6 @@ void handleSerial() {
   }
 }
 
-// ---- wifi with retry ----
 unsigned long lastTry = 0;
 bool netUp = false;
 
@@ -388,7 +358,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("dish-rotator");
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  setupHttp();                       // handlers are registered once
+  setupHttp();
   ArduinoOTA.setHostname("dish-rotator");
   ArduinoOTA.setPassword(OTA_PASS);
   Serial.println("ready. try: e 5");
