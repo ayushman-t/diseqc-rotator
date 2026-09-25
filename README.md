@@ -2,11 +2,13 @@
 
 ![the dish sweeping](hardware/rotator.gif)
 
+<img src="hardware/dashboard.png" alt="web dashboard" width="380">
+
 An ESP32 turns a cheap DiSEqC 1.2 satellite dish motor into a WiFi controlled
 azimuth rotator for a small radio telescope dish. Four passive parts, no driver
 IC, no set top box. Built for a 1 m grid dish used for hydrogen line observing.
 
-Ayushman Tripathi, www.radioastronomy.in. Free for anyone to use, for anything (MIT).
+Ayushman Tripathi, [radioastronomy.in](https://radioastronomy.in/). Free for anyone to use, for anything (MIT).
 
 ## How it works
 
